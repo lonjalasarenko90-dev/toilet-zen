@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>ТуалетРитм 🚽</title>
+
+  <!-- Favicon -->
+  <link rel="icon" href="data:,🚽" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ТуалетРитм" />
+
+  <!--
+    ВАЖЛИВО: React і Babel завантажуємо БЕЗ defer.
+    Babel повинен бути готовий ДО того як браузер
+    зустріне <script type="text/babel"> в body.
+  -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      background: #0d1117;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    #root { min-height: 100vh; }
+
+    @keyframes wordPop {
+      0%   { transform: scale(0.7); opacity: 0.3; }
+      70%  { transform: scale(1.1); }
+      100% { transform: scale(1);   opacity: 1; }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in  { animation: fadeIn 0.45s ease both; }
+    .word-pop { animation: wordPop 0.35s cubic-bezier(0.34,1.56,0.64,1) both; }
+    button { font-family: inherit; cursor: pointer; }
+    button:hover  { filter: brightness(1.12); }
+    button:active { transform: scale(0.97); }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Service Worker -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('sw.js').catch(function() {});
+    });
+  }
+</script>
+
+<!-- JSX — виконується після того як Babel вже завантажений вище -->
+<script type="text/babel">
+
+const { useState, useEffect, useRef } = React;
+
+const BREATH_CYCLES   = 3;
+const BREATH_DURATION = 4000;
+
+const SOUNDS = {
+  pee: ["пісь", "пісь", "пісь", "пісь", "пісь", "пісь", "пісь"],
+  poo: ["а-а-а", "чорнослив", "чорнослив", "розслабся", "а-а-а", "дихай", "добре..."],
+};
+
+const TIPS = {
+  pee: [
+    "💧 Уяви звук водоспаду",
+    "🌊 Течія річки... тихо, спокійно",
+    "😮‍💨 Глибокий видих і розслабся",
+    "🧘 Плечі вниз, живіт м'який",
+    "🎵 Не думай — просто дихай",
+  ],
+  poo: [
+    "🦶 Підніми ноги на підставку",
+    "🌿 Чорнослив, кефір, вода",
+    "💨 Не тужся — просто дихай",
+    "⏰ Не поспішай, дай час тілу",
+    "🧘 Розслаб живіт повністю",
+  ],
+};
+
+const CLEAN_STATE = {
+  phase: "idle",
+  timer: 0,
+  breathCount: 0,
+  chantIdx: 0,
+  tipIdx: 0,
+  showWarning: false,
+  breathPhase: "in",
+  pulseKey: 0,
+};
+
+const modeCard = (bg, accent) => ({
+  background: bg,
+  border: `1px solid ${accent}44`,
+  borderRadius: "18px",
+  padding: "20px 24px",
+  display: "flex", alignItems: "center", gap: "18px",
+  cursor: "pointer", color: "#e8dcc8",
+  textAlign: "left", width: "100%",
+  transition: "filter 0.15s, transform 0.1s",
+  boxShadow: `0 4px 24px ${accent}22`,
+});
+
+const stopBtnStyle = {
+  background: "rgba(239,68,68,0.09)",
+  border: "1px solid rgba(239,68,68,0.25)",
+  color: "#f87171", padding: "10px 30px",
+  borderRadius: "50px", fontSize: "13px",
+  letterSpacing: "0.05em",
+  display: "block", margin: "0 auto",
+};
+
+function ToiletApp() {
+  const [mode, setMode] = useState(() => {
+    try { return localStorage.getItem("lastMode") || null; } catch { return null; }
+  });
+  const [silentMode, setSilentMode] = useState(false);
+  const [state, setState]           = useState(CLEAN_STATE);
+  const intervalRef                 = useRef(null);
+  const timerRef                    = useRef(null);
+
+  const S = (patch) => setState(prev => ({ ...prev, ...patch }));
+  const clearAll = () => {
+    clearInterval(intervalRef.current);
+    clearInterval(timerRef.current);
+  };
+  const resetAll = () => { clearAll(); setState(CLEAN_STATE); };
+
+  // "Приготуйся" → breathing
+  useEffect(() => {
+    if (state.phase !== "ready") return;
+    const t = setTimeout(() => S({ phase: "breathing" }), 1800);
+    return () => clearTimeout(t);
+  }, [state.phase]);
+
+  // Дихання
+  useEffect(() => {
+    if (state.phase !== "breathing") return;
+    let count = 0;
+    intervalRef.current = setInterval(() => {
+      count++;
+      setState(prev => ({
+        ...prev,
+        breathCount: count,
+        breathPhase: count % 2 === 0 ? "in" : "out",
+      }));
+      if (count >= BREATH_CYCLES * 2) {
+        clearInterval(intervalRef.current);
+        setState(prev => ({ ...prev, phase: "chant", chantIdx: 0 }));
+      }
+    }, BREATH_DURATION);
+    return () => clearInterval(intervalRef.current);
+  }, [state.phase]);
+
+  // Ритм-чант
+  useEffect(() => {
+    if (state.phase !== "chant") return;
+    let idx = 0;
+    intervalRef.current = setInterval(() => {
+      if (idx >= SOUNDS[mode].length - 1) {
+        clearInterval(intervalRef.current);
+        S({ phase: "done" });
+      } else {
+        idx++;
+        setState(prev => ({ ...prev, chantIdx: idx, pulseKey: idx }));
+        if (!silentMode && typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate(60);
+        }
+      }
+    }, 900);
+    return () => clearInterval(intervalRef.current);
+  }, [state.phase, mode, silentMode]);
+
+  // Таймер
+  useEffect(() => {
+    if (state.phase !== "chant" && state.phase !== "breathing") return;
+    timerRef.current = setInterval(() => {
+      setState(prev => ({ ...prev, timer: prev.timer + 1 }));
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [state.phase]);
+
+  // Підказки
+  useEffect(() => {
+    if (state.phase !== "chant") return;
+    const t = setInterval(() => {
+      setState(prev => ({
+        ...prev,
+        tipIdx: (prev.tipIdx + 1) % TIPS[mode].length,
+      }));
+    }, 3500);
+    return () => clearInterval(t);
+  }, [state.phase, mode]);
+
+  const start = (m) => {
+    clearAll();
+    setMode(m);
+    setState({ ...CLEAN_STATE, phase: "ready", showWarning: m === "poo" });
+    try { localStorage.setItem("lastMode", m); } catch {}
+  };
+
+  const { phase, timer, breathCount, breathPhase,
+          chantIdx, tipIdx, showWarning, pulseKey } = state;
+
+  const breathProgress  = Math.min((breathCount / (BREATH_CYCLES * 2)) * 100, 100);
+  const breathRemaining = Math.max(BREATH_CYCLES - Math.floor(breathCount / 2), 0);
+  const timerStr = `${String(Math.floor(timer/60)).padStart(2,"0")}:${String(timer%60).padStart(2,"0")}`;
+  const totalSec = BREATH_CYCLES * 2 * BREATH_DURATION / 1000;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(160deg, #0d1117 0%, #1a1f2e 50%, #0d1117 100%)",
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      fontFamily: "Georgia, serif", color: "#e8dcc8",
+      padding: "24px", position: "relative", overflow: "hidden",
+    }}>
+
+      <div style={{
+        position: "absolute", inset: 0, pointerEvents: "none",
+        backgroundImage: `
+          radial-gradient(ellipse at 20% 50%, rgba(120,80,200,0.08) 0%, transparent 60%),
+          radial-gradient(ellipse at 80% 20%, rgba(60,160,220,0.06) 0%, transparent 50%)
+        `,
+      }} />
+
+      {/* Кнопка вібрації */}
+      <div style={{ position: "absolute", top: "18px", right: "18px", zIndex: 10 }}>
+        <button onClick={() => setSilentMode(s => !s)} style={{
+          background: silentMode ? "rgba(99,102,241,0.22)" : "rgba(255,255,255,0.05)",
+          border: "1px solid rgba(255,255,255,0.11)",
+          borderRadius: "20px", padding: "6px 14px",
+          fontSize: "12px", letterSpacing: "0.05em",
+          color: silentMode ? "#818cf8" : "#6b7280",
+        }}>
+          {silentMode ? "🤫 Без вібрації" : "📳 Вібрація"}
+        </button>
+      </div>
+
+      {/* Заголовок */}
+      <div style={{ textAlign: "center", marginBottom: "28px", zIndex: 1 }}>
+        <div style={{ fontSize: "44px", marginBottom: "6px" }}>🚽</div>
+        <h1 style={{
+          fontSize: "26px", fontWeight: "400", letterSpacing: "0.08em",
+          color: "#c8b89a", margin: "0 0 2px",
+          textShadow: "0 0 30px rgba(200,184,154,0.25)",
+        }}>ТуалетРитм</h1>
+        <p style={{ fontSize: "11px", color: "#4b5563", letterSpacing: "0.18em", margin: 0 }}>
+          РЕЛАКС-ПОМІЧНИК • НЕ ЗАМІНЮЄ ЛІКАРЯ
+        </p>
+      </div>
+
+      {/* IDLE */}
+      {phase === "idle" && (
+        <div className="fade-in" style={{ zIndex: 1, width: "100%", maxWidth: "360px" }}>
+          <p style={{ textAlign: "center", color: "#9ca3af", fontSize: "15px", marginBottom: "28px" }}>
+            Що потрібно зараз?
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            {[
+              { m:"pee", emoji:"💧", label:"По-маленькому", sub:"Пісь-пісь метод",  bg:"#1e3a5f", accent:"#3b82f6", hi:"#60a5fa" },
+              { m:"poo", emoji:"🌿", label:"По-великому",   sub:"Чорнослив метод", bg:"#2d1f0e", accent:"#d97706", hi:"#f59e0b" },
+            ].map(({ m, emoji, label, sub, bg, accent, hi }) => (
+              <button key={m} onClick={() => start(m)} style={modeCard(bg, accent)}>
+                <span style={{ fontSize: "30px" }}>{emoji}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "17px", fontWeight: "600" }}>{label}</div>
+                  <div style={{ fontSize: "12px", opacity: 0.65 }}>{sub}</div>
+                </div>
+                {mode === m && <span style={{ fontSize: "11px", color: hi }}>↩ останній</span>}
+              </button>
+            ))}
+          </div>
+          <div style={{
+            marginTop: "24px", padding: "14px 16px", textAlign: "center",
+            background: "rgba(255,255,255,0.03)", borderRadius: "12px",
+            border: "1px solid rgba(255,255,255,0.07)",
+            fontSize: "13px", color: "#6b7280", lineHeight: 1.6,
+          }}>
+            Допомагає розслабитись і сформувати спокійний ритуал 🧘
+          </div>
+        </div>
+      )}
+
+      {/* READY */}
+      {phase === "ready" && (
+        <div className="fade-in" style={{ zIndex: 1, textAlign: "center" }}>
+          <div style={{ fontSize: "64px", marginBottom: "16px" }}>🧘</div>
+          <div style={{ fontSize: "24px", color: "#c8b89a", fontWeight: "300", letterSpacing: "0.12em" }}>
+            Приготуйся...
+          </div>
+          <div style={{ color: "#4b5563", fontSize: "13px", marginTop: "12px" }}>
+            зараз почнемо дихання
+          </div>
+        </div>
+      )}
+
+      {/* BREATHING */}
+      {phase === "breathing" && (
+        <div className="fade-in" style={{ zIndex: 1, textAlign: "center", maxWidth: "320px", width: "100%" }}>
+          <p style={{ color: "#6b7280", fontSize: "12px", letterSpacing: "0.18em", marginBottom: "28px" }}>
+            КРОК 1 — ДИХАННЯ ({totalSec} сек)
+          </p>
+          <div style={{
+            width: "154px", height: "154px", borderRadius: "50%",
+            margin: "0 auto 22px",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: breathPhase === "in"
+              ? "radial-gradient(circle, rgba(59,130,246,0.28) 0%, rgba(59,130,246,0.04) 70%)"
+              : "radial-gradient(circle, rgba(217,119,6,0.28) 0%, rgba(217,119,6,0.04) 70%)",
+            border: `2px solid ${breathPhase === "in" ? "rgba(59,130,246,0.38)" : "rgba(217,119,6,0.38)"}`,
+            transition: `all ${BREATH_DURATION * 0.9}ms ease`,
+            transform: breathPhase === "in" ? "scale(1.18)" : "scale(0.88)",
+            boxShadow: breathPhase === "in"
+              ? "0 0 50px rgba(59,130,246,0.18)" : "0 0 20px rgba(217,119,6,0.12)",
+          }}>
+            <span style={{ fontSize: "38px" }}>{breathPhase === "in" ? "😮‍💨" : "😌"}</span>
+          </div>
+          <div style={{ fontSize: "22px", fontWeight: "300", letterSpacing: "0.2em", color: "#c8b89a" }}>
+            {breathPhase === "in" ? "ВДИХ..." : "ВИДИХ..."}
+          </div>
+          <div style={{ color: "#4b5563", fontSize: "13px", margin: "12px 0 22px" }}>
+            ще {breathRemaining} {breathRemaining === 1 ? "цикл" : "циклів"}
+          </div>
+          <div style={{ height: "3px", background: "rgba(255,255,255,0.08)", borderRadius: "2px", marginBottom: "26px" }}>
+            <div style={{
+              height: "100%", borderRadius: "2px",
+              background: "linear-gradient(90deg, #3b82f6, #8b5cf6)",
+              width: `${breathProgress}%`, transition: "width 0.5s",
+            }} />
+          </div>
+          <button onClick={resetAll} style={stopBtnStyle}>✕ Стоп</button>
+        </div>
+      )}
+
+      {/* CHANT */}
+      {phase === "chant" && (
+        <div className="fade-in" style={{ zIndex: 1, textAlign: "center", maxWidth: "340px", width: "100%" }}>
+          <div style={{ color: "#6b7280", fontSize: "11px", letterSpacing: "0.2em", marginBottom: "20px" }}>
+            {mode === "pee" ? "💧 КРОК 2 — РИТМ" : "🌿 КРОК 2 — РИТМ"}
+          </div>
+          <div key={pulseKey} className="word-pop" style={{
+            fontSize: "50px", fontWeight: "700",
+            padding: "28px 32px", borderRadius: "20px",
+            marginBottom: "20px", letterSpacing: "0.04em",
+            color: mode === "pee" ? "#60a5fa" : "#f59e0b",
+            background: mode === "pee"
+              ? "radial-gradient(ellipse, rgba(59,130,246,0.11) 0%, transparent 70%)"
+              : "radial-gradient(ellipse, rgba(245,158,11,0.11) 0%, transparent 70%)",
+            textShadow: mode === "pee"
+              ? "0 0 30px rgba(96,165,250,0.5)"
+              : "0 0 30px rgba(245,158,11,0.5)",
+          }}>
+            {SOUNDS[mode][chantIdx]}
+          </div>
+          <div style={{ display: "flex", gap: "8px", justifyContent: "center", marginBottom: "20px" }}>
+            {SOUNDS[mode].map((_, i) => (
+              <div key={i} style={{
+                width: "7px", height: "7px", borderRadius: "50%", transition: "all 0.3s",
+                background: i <= chantIdx ? (mode === "pee" ? "#60a5fa" : "#f59e0b") : "rgba(255,255,255,0.1)",
+                transform: i === chantIdx ? "scale(1.45)" : "scale(1)",
+              }} />
+            ))}
+          </div>
+          <div style={{ fontSize: "28px", fontWeight: "300", color: "#374151", letterSpacing: "0.12em", marginBottom: "20px" }}>
+            {timerStr}
+          </div>
+          <div style={{
+            padding: "14px 18px", background: "rgba(255,255,255,0.04)",
+            borderRadius: "12px", border: "1px solid rgba(255,255,255,0.06)",
+            fontSize: "14px", color: "#9ca3af", minHeight: "48px",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            {TIPS[mode][tipIdx]}
+          </div>
+          {silentMode && (
+            <div style={{ marginTop: "10px", fontSize: "12px", color: "#4b5563" }}>
+              🤫 Вібрацію вимкнено
+            </div>
+          )}
+          <button onClick={resetAll} style={{ ...stopBtnStyle, marginTop: "20px" }}>✕ Стоп</button>
+        </div>
+      )}
+
+      {/* DONE */}
+      {phase === "done" && (
+        <div className="fade-in" style={{ zIndex: 1, textAlign: "center", maxWidth: "320px" }}>
+          <div style={{ fontSize: "68px", marginBottom: "14px" }}>
+            {mode === "pee" ? "💦" : "✨"}
+          </div>
+          <h2 style={{ fontSize: "22px", color: "#c8b89a", fontWeight: "400", margin: "0 0 8px" }}>
+            Молодець!
+          </h2>
+          <p style={{ color: "#9ca3af", fontSize: "14px", marginBottom: "20px" }}>
+            {mode === "pee" ? "Організм каже дякую 💧" : "Тіло оцінить турботу 🌿"}
+          </p>
+          {showWarning && (
+            <div style={{
+              padding: "14px 16px", marginBottom: "18px",
+              background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.22)",
+              borderRadius: "12px", fontSize: "12px", color: "#fca5a5",
+              lineHeight: 1.75, textAlign: "left",
+            }}>
+              ⚠️ <strong>Зверніться до лікаря, якщо є:</strong><br />
+              • сильний або постійний біль<br />
+              • кров у калі<br />
+              • кілька днів без стулу<br />
+              • блювання або температура
+            </div>
+          )}
+          <div style={{
+            padding: "14px 16px", background: "rgba(255,255,255,0.04)",
+            borderRadius: "12px", border: "1px solid rgba(255,255,255,0.06)",
+            marginBottom: "20px", fontSize: "13px", color: "#6b7280", lineHeight: 1.85,
+          }}>
+            {mode === "poo"
+              ? <span>🥣 Більше води щодня<br />🌾 Клітковина та чорнослив<br />🚶 Прогулянка ранком</span>
+              : <span>💧 Пий достатньо води<br />🧘 Розслабляйся в туалеті<br />⏰ Не затримуй надовго</span>
+            }
+          </div>
+          <button onClick={resetAll} style={{
+            background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.13)",
+            color: "#e8dcc8", padding: "13px 34px", borderRadius: "50px",
+            fontSize: "14px", letterSpacing: "0.05em",
+          }}>
+            На початок 🏠
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ToiletApp />);
+</script>
+</body>
+</html>
